@@ -22,7 +22,7 @@
 
 ## Как поднять на Debian
 
-На сервере нужны Docker и Docker Compose. Пользователь должен быть в группе `docker`.
+На сервере нужны Docker и Docker Compose. Пользователь должен быть в группе `docker`. Образ Superset собирается локально: к официальному `apache/superset:4.1.2` добавляется драйвер Postgres.
 
 ```bash
 cp .env.example .env
