@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # Выполняется Postgres только при пустом томе данных.
 set -euo pipefail
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres -c "CREATE DATABASE analytics"
