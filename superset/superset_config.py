@@ -1,0 +1,26 @@
+import os
+
+SECRET_KEY = os.environ["SUPERSET_SECRET_KEY"]
+SQLALCHEMY_DATABASE_URI = os.environ["SUPERSET_METADATA_DB"]
+SQLALCHEMY_ENGINE_OPTIONS = {"pool_pre_ping": True, "pool_size": 5, "max_overflow": 5}
+
+FEATURE_FLAGS = {
+    "ENABLE_TEMPLATE_PROCESSING": True,
+    "DASHBOARD_NATIVE_FILTERS": True,
+}
+
+BABEL_DEFAULT_LOCALE = "ru"
+LANGUAGES = {
+    "ru": {"flag": "ru", "name": "Русский"},
+    "en": {"flag": "us", "name": "English"},
+}
+
+APP_NAME = "Отчёты КСО"
+TALISMAN_ENABLED = False
+WTF_CSRF_ENABLED = True
+SESSION_COOKIE_SAMESITE = "Lax"
+SUPERSET_WEBSERVER_TIMEOUT = 300
+ROW_LIMIT = 50000
+FILTER_SELECT_ROW_LIMIT = 1000
+SAMPLES_ROW_LIMIT = 1000
+PREVENT_UNSAFE_DB_CONNECTIONS = False
