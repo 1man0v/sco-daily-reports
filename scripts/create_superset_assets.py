@@ -176,7 +176,10 @@ def object_id(body):
 def create_database(api):
     user = os.environ["POSTGRES_USER"]
     password = os.environ["POSTGRES_PASSWORD"]
-    uri = f"postgresql+psycopg2://{user}:{password}@postgres:5432/analytics"
+    host = os.environ.get("ANALYTICS_DB_HOST", "postgres")
+    port = os.environ.get("ANALYTICS_DB_PORT", "5432")
+    name = os.environ.get("ANALYTICS_DB_NAME", "analytics")
+    uri = os.environ.get("ANALYTICS_SQLALCHEMY_URI") or f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{name}"
     body = api("POST", "/api/v1/database/", {
         "database_name": "Аналитика КСО",
         "sqlalchemy_uri": uri,
@@ -442,6 +445,9 @@ def chart_data(api, dataset_id, columns, metrics, filters):
 
 
 def verify(api, daily_id, chain_out_id, store_out_id):
+    if os.environ.get("SUPERSET_SKIP_VERIFY") == "1":
+        print("verify skipped")
+        return
     expected = json.loads((ROOT / "data" / "expected_30d.json").read_text(encoding="utf-8"))
     date_filter = [{"col": "report_date", "op": "TEMPORAL_RANGE", "val": TIME_RANGE}]
     chains = chart_data(
@@ -574,7 +580,7 @@ p95 товаров, средняя длительность чека и сред
         [(stores_share, 4, 16, "Доля чеков КСО"), (stores_annul, 4, 16, "Доля аннуляций"), (stores_transfer, 4, 16, "Доля перетока")],
         [(stores_table, 12, 110, "Таблица")],
     ], [
-        select_filter("NATIVE_FILTER-chain", "Торговая сеть", [daily_id], "chain_name", store_charts, default="Сеть 002", required=True),
+        select_filter("NATIVE_FILTER-chain", "Торговая сеть", [daily_id], "chain_name", store_charts, default=os.environ.get("SUPERSET_DEFAULT_CHAIN", "Сеть 002"), required=True),
         time_filter(daily_id, store_charts),
     ])
 

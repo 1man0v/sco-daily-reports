@@ -9,6 +9,8 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./sql/001_schema.sql:/sql/001_schema.sql:ro
       - ./sql/003_load.sql:/sql/003_load.sql:ro
+      - ./sql/004_client_attributes.sql:/sql/004_client_attributes.sql:ro
+      - ./sql/005_norms.sql:/sql/005_norms.sql:ro
       - ./sql/002_init.sh:/docker-entrypoint-initdb.d/002_init.sh:ro
       - ./data:/data:ro
     healthcheck:
