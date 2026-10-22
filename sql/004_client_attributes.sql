@@ -23,7 +23,10 @@ SELECT
   m.sco_avg_annul_sec,
   c.country,
   c.region,
-  c.store_format
+  c.store_format,
+  cc.stores_with_pos,
+  cc.sco_registers_total,
+  cc.pos_registers_total
 FROM daily_store_metric m
 JOIN store s ON s.id = m.store_id AND s.has_sco
 JOIN chain c ON c.id = s.chain_id
@@ -31,7 +34,10 @@ JOIN (
   SELECT
     chain_id,
     COUNT(*) FILTER (WHERE has_sco) AS stores_with_sco,
-    COUNT(*) FILTER (WHERE NOT has_sco) AS stores_without_sco
+    COUNT(*) FILTER (WHERE NOT has_sco) AS stores_without_sco,
+    COUNT(*) FILTER (WHERE pos_registers > 0) AS stores_with_pos,
+    COALESCE(SUM(sco_registers), 0) AS sco_registers_total,
+    COALESCE(SUM(pos_registers), 0) AS pos_registers_total
   FROM store
   GROUP BY chain_id
 ) cc ON cc.chain_id = c.id;

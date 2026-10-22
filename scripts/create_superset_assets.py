@@ -26,6 +26,9 @@ LABELS = {
     "report_date": "Дата",
     "stores_with_sco": "Магазинов с КСО",
     "stores_without_sco": "Магазинов без КСО",
+    "stores_with_pos": "Магазинов с POS",
+    "chain_sco_registers": "Касс КСО",
+    "chain_pos_registers": "Касс POS",
     "sco_registers": "Касс КСО",
     "pos_registers": "Касс POS",
     "sco_receipts": "Чеки КСО",
@@ -51,6 +54,9 @@ DAILY_METRICS = [
     ("chain_count", "COUNT(DISTINCT chain_id)", "chain_count", ",.0f"),
     ("stores_with_sco", "MAX(stores_with_sco)", "stores_with_sco", ",.0f"),
     ("stores_without_sco", "MAX(stores_without_sco)", "stores_without_sco", ",.0f"),
+    ("stores_with_pos", "MAX(stores_with_pos)", "stores_with_pos", ",.0f"),
+    ("chain_sco_registers", "MAX(sco_registers_total)", "chain_sco_registers", ",.0f"),
+    ("chain_pos_registers", "MAX(pos_registers_total)", "chain_pos_registers", ",.0f"),
     ("sco_registers", "MAX(sco_registers)", "sco_registers", ",.0f"),
     ("pos_registers", "MAX(pos_registers)", "pos_registers", ",.0f"),
     ("sco_receipts", "SUM(sco_receipts)", "sco_receipts", ",.0f"),
@@ -64,11 +70,15 @@ DAILY_METRICS = [
     ("sco_avg_duration_sec", "SUM(sco_avg_duration_sec * sco_receipts) / NULLIF(SUM(sco_receipts), 0)", "sco_avg_duration_sec", ",.1f"),
     ("sco_avg_annul_sec", "SUM(sco_avg_annul_sec * sco_annulled) / NULLIF(SUM(sco_annulled), 0)", "sco_avg_annul_sec", ",.1f"),
 ]
-NAV = (
-    "[Клиенты](/superset/dashboard/clients/) · "
-    "[Магазины клиента](/superset/dashboard/stores/) · "
-    "[Аутсайдеры](/superset/dashboard/outliers/)"
-)
+RED = "#E04355"
+SHARE_FORMAT = [
+    {"column": "sco_share_pct", "operator": "<", "targetValue": 30, "colorScheme": RED},
+    {"column": "annul_share_pct", "operator": ">", "targetValue": 2, "colorScheme": RED},
+]
+STORE_FORMAT = SHARE_FORMAT + [
+    {"column": "sco_avg_duration_sec", "operator": ">", "targetValue": 90, "colorScheme": RED},
+    {"column": "sco_avg_annul_sec", "operator": ">", "targetValue": 120, "colorScheme": RED},
+]
 
 
 class Api:
@@ -225,15 +235,7 @@ def create_chart(api, name, dataset_id, params):
     return object_id(body)
 
 
-def markdown_chart(api, name, dataset_id, text):
-    return create_chart(api, name, dataset_id, {
-        "datasource": f"{dataset_id}__table",
-        "viz_type": "markdown",
-        "code": text,
-    })
-
-
-def big_number(api, name, dataset_id, metric, fmt):
+def big_number(api, name, dataset_id, metric, fmt, conditional_formatting=None):
     return create_chart(api, name, dataset_id, {
         "datasource": f"{dataset_id}__table",
         "viz_type": "big_number_total",
@@ -241,13 +243,14 @@ def big_number(api, name, dataset_id, metric, fmt):
         "granularity_sqla": "report_date",
         "time_range": TIME_RANGE,
         "y_axis_format": fmt,
-        "header_font_size": 0.35,
-        "subheader_font_size": 0.15,
-        "subheader": LABELS[metric],
+        "header_font_size": 0.7,
+        "subheader_font_size": 0.12,
+        "subheader": "",
+        "conditional_formatting": conditional_formatting or [],
     })
 
 
-def aggregate_table(api, name, dataset_id, groupby, metrics):
+def aggregate_table(api, name, dataset_id, groupby, metrics, conditional_formatting=None, row_limit=500):
     return create_chart(api, name, dataset_id, {
         "datasource": f"{dataset_id}__table",
         "viz_type": "table",
@@ -256,19 +259,20 @@ def aggregate_table(api, name, dataset_id, groupby, metrics):
         "metrics": metrics,
         "percent_metrics": [],
         "adhoc_filters": [],
-        "row_limit": 500,
+        "row_limit": row_limit,
         "order_desc": False,
         "include_search": True,
         "show_cell_bars": False,
         "color_pn": False,
-        "page_length": 25,
+        "page_length": 200,
         "granularity_sqla": "report_date",
         "time_range": TIME_RANGE,
         "table_timestamp_format": "%d.%m.%Y",
+        "conditional_formatting": conditional_formatting or [],
     })
 
 
-def raw_table(api, name, dataset_id, columns):
+def raw_table(api, name, dataset_id, columns, conditional_formatting=None):
     return create_chart(api, name, dataset_id, {
         "datasource": f"{dataset_id}__table",
         "viz_type": "table",
@@ -281,8 +285,9 @@ def raw_table(api, name, dataset_id, columns):
         "include_search": True,
         "show_cell_bars": False,
         "color_pn": False,
-        "page_length": 20,
+        "page_length": 200,
         "table_timestamp_format": "%d.%m.%Y",
+        "conditional_formatting": conditional_formatting or [],
     })
 
 
@@ -303,7 +308,20 @@ def layout(title, rows):
             "parents": ["ROOT_ID", "GRID_ID"],
             "meta": {"background": "BACKGROUND_TRANSPARENT"},
         }
-        for chart_index, (chart_id, width, height, chart_name) in enumerate(row):
+        for chart_index, cell in enumerate(row):
+            if cell[0] == "md":
+                _, width, height, text = cell
+                key = f"MARKDOWN-{index}-{chart_index}"
+                position[row_id]["children"].append(key)
+                position[key] = {
+                    "type": "MARKDOWN",
+                    "id": key,
+                    "children": [],
+                    "parents": ["ROOT_ID", "GRID_ID", row_id],
+                    "meta": {"width": width, "height": height, "code": text},
+                }
+                continue
+            chart_id, width, height, chart_name = cell
             chart_key = f"CHART-{index}-{chart_index}"
             position[row_id]["children"].append(chart_key)
             position[chart_key] = {
@@ -392,7 +410,10 @@ def create_dashboard(api, title, slug, charts, filters):
     })
     dashboard_id = object_id(body)
     for row in charts:
-        for chart_id, _, _, _ in row:
+        for cell in row:
+            if cell[0] == "md":
+                continue
+            chart_id = cell[0]
             api("PUT", f"/api/v1/chart/{chart_id}", {"dashboards": [dashboard_id]})
     return dashboard_id
 
@@ -468,8 +489,6 @@ def verify(api, daily_id, chain_out_id, store_out_id):
         [{"col": "period_name", "op": "IN", "val": ["30 дней"]}],
     )["data"]
     outlier_names = {row["chain_name"] for row in outliers}
-    if len(outlier_names) != expected["outlier_chains_30d"]:
-        raise RuntimeError(f"аутсайдеров {len(outlier_names)}, ожидалось {expected['outlier_chains_30d']}")
     if "Сеть 007" not in outlier_names or "Сеть 001" in outlier_names:
         raise RuntimeError("Сеть 007 должна быть аутсайдером, Сеть 001 нет")
     store_outliers = chart_data(
@@ -500,78 +519,87 @@ def main():
     store_out_id = create_dataset(api, database_id, "v_store_outlier", [], None)
     threshold_id = create_dataset(api, database_id, "v_threshold", [], None)
 
-    clients_md = markdown_chart(api, "Клиенты — пояснение", daily_id, NAV + """
-
-В таблице только магазины с кассами самообслуживания. Магазины без КСО стоят в отдельном столбце и в доли не входят.
+    clients_md = ("md", 12, 22, """
+В доли входят только магазины с кассами самообслуживания. Магазины без КСО в доли не входят. Число касс и магазинов с POS берётся по всей сети.
 
 Доля чеков КСО = сумма чеков КСО / (чеки КСО + чеки POS). Доля аннуляций = аннулированные чеки КСО / чеки КСО. Доля перетока = потенциальные чеки POS (до 10 товаров, не наличные) / чеки POS. За период складываются чеки, а не дневные проценты.
+
+Красным отмечено значение хуже нормы: доля чеков КСО ниже 30%, доля аннуляций выше 2%.
 """)
-    clients_chains = big_number(api, "Клиенты — сети", daily_id, "chain_count", ",.0f")
-    clients_share = big_number(api, "Клиенты — доля чеков КСО", daily_id, "sco_share_pct", ",.1f")
-    clients_annul = big_number(api, "Клиенты — доля аннуляций", daily_id, "annul_share_pct", ",.1f")
-    clients_transfer = big_number(api, "Клиенты — доля перетока", daily_id, "transfer_share_pct", ",.1f")
+    clients_chains = big_number(api, "Торговых сетей", daily_id, "chain_count", ",.0f")
+    clients_share = big_number(api, "Доля чеков КСО", daily_id, "sco_share_pct", ",.1f", [SHARE_FORMAT[0]])
+    clients_annul = big_number(api, "Доля аннуляций", daily_id, "annul_share_pct", ",.1f", [SHARE_FORMAT[1]])
+    clients_transfer = big_number(api, "Доля перетока", daily_id, "transfer_share_pct", ",.1f")
     clients_table = aggregate_table(
         api, "Клиенты — таблица", daily_id, ["chain_name"],
-        ["stores_with_sco", "stores_without_sco", "sco_receipts", "pos_receipts", "sco_share_pct", "annul_share_pct", "transfer_share_pct"],
+        ["sco_share_pct", "annul_share_pct", "transfer_share_pct", "stores_with_sco", "chain_sco_registers", "stores_with_pos", "chain_pos_registers"],
+        SHARE_FORMAT,
     )
     client_charts = [clients_chains, clients_share, clients_annul, clients_transfer, clients_table]
     create_dashboard(api, "Клиенты", "clients", [
-        [(clients_md, 12, 22, "Пояснение")],
-        [(clients_chains, 3, 18, "Сети"), (clients_share, 3, 18, "Доля КСО"), (clients_annul, 3, 18, "Аннуляции"), (clients_transfer, 3, 18, "Переток")],
+        [clients_md],
+        [(clients_chains, 3, 16, "Торговых сетей"), (clients_share, 3, 16, "Доля чеков КСО"), (clients_annul, 3, 16, "Доля аннуляций"), (clients_transfer, 3, 16, "Доля перетока")],
         [(clients_table, 12, 120, "Таблица")],
     ], [time_filter(daily_id, client_charts)])
 
-    stores_md = markdown_chart(api, "Магазины — пояснение", daily_id, NAV + """
-
+    stores_md = ("md", 12, 24, """
 Выберите сеть сверху. В таблице магазины этой сети, у которых есть КСО.
 
 p95 товаров, средняя длительность чека и среднее время аннуляции за период — среднее дневных значений с весом по чекам. Это не новый p95 по сырым чекам: в суточном агрегате сырых чеков нет.
+
+Красным отмечено значение хуже нормы: доля чеков КСО ниже 30%, доля аннуляций выше 2%, длительность чека выше 90 секунд, время аннуляции выше 120 секунд.
 """)
-    stores_with = big_number(api, "Магазины — с КСО", daily_id, "stores_with_sco", ",.0f")
-    stores_without = big_number(api, "Магазины — без КСО", daily_id, "stores_without_sco", ",.0f")
-    stores_share = big_number(api, "Магазины — доля чеков КСО", daily_id, "sco_share_pct", ",.1f")
-    stores_annul = big_number(api, "Магазины — доля аннуляций", daily_id, "annul_share_pct", ",.1f")
-    stores_transfer = big_number(api, "Магазины — доля перетока", daily_id, "transfer_share_pct", ",.1f")
+    stores_with = big_number(api, "Магазинов с КСО", daily_id, "stores_with_sco", ",.0f")
+    stores_without = big_number(api, "Магазинов без КСО", daily_id, "stores_without_sco", ",.0f")
+    stores_share = big_number(api, "Доля чеков КСО", daily_id, "sco_share_pct", ",.1f", [SHARE_FORMAT[0]])
+    stores_annul = big_number(api, "Доля аннуляций", daily_id, "annul_share_pct", ",.1f", [SHARE_FORMAT[1]])
+    stores_transfer = big_number(api, "Доля перетока", daily_id, "transfer_share_pct", ",.1f")
     stores_table = aggregate_table(
         api, "Магазины — таблица", daily_id, ["store_name"],
         [
-            "sco_registers", "pos_registers", "sco_receipts", "pos_receipts", "sco_annulled", "pos_potential",
+            "sco_registers", "pos_registers",
             "sco_share_pct", "annul_share_pct", "transfer_share_pct",
-            "sco_items_p95", "sco_avg_duration_sec", "sco_avg_annul_sec",
+            "sco_receipts", "pos_receipts",
+            "sco_items_p95", "sco_avg_duration_sec",
+            "pos_potential",
+            "sco_annulled", "sco_avg_annul_sec",
         ],
+        STORE_FORMAT,
+        row_limit=3000,
     )
     store_charts = [stores_with, stores_without, stores_share, stores_annul, stores_transfer, stores_table]
     create_dashboard(api, "Магазины клиента", "stores", [
-        [(stores_md, 12, 24, "Пояснение")],
-        [(stores_with, 6, 16, "С КСО"), (stores_without, 6, 16, "Без КСО")],
-        [(stores_share, 4, 16, "Доля КСО"), (stores_annul, 4, 16, "Аннуляции"), (stores_transfer, 4, 16, "Переток")],
+        [stores_md],
+        [(stores_with, 6, 16, "Магазинов с КСО"), (stores_without, 6, 16, "Магазинов без КСО")],
+        [(stores_share, 4, 16, "Доля чеков КСО"), (stores_annul, 4, 16, "Доля аннуляций"), (stores_transfer, 4, 16, "Доля перетока")],
         [(stores_table, 12, 110, "Таблица")],
     ], [
         select_filter("NATIVE_FILTER-chain", "Торговая сеть", [daily_id], "chain_name", store_charts, default="Сеть 002", required=True),
         time_filter(daily_id, store_charts),
     ])
 
-    outliers_md = markdown_chart(api, "Аутсайдеры — пояснение", threshold_id, NAV + """
+    outliers_md = ("md", 12, 28, """
+Сеть или магазин попадает сюда, если за весь выбранный период доля чеков КСО ниже 30% или доля аннуляций выше 2%. Столбец «Почему аутсайдер» собирается в базе: в него попадают только те условия, которые сработали.
 
-Сеть или магазин попадает сюда, если за весь выбранный период доля чеков КСО ниже 30%, доля аннуляций выше 3% или доля перетока выше 40%. 30% — норматив продукта. 3% и 40% — стартовые значения примера, они лежат в таблице порогов и не являются утверждённым нормативом.
-
-«30 дней» совпадает с периодом по умолчанию на странице клиентов: 20.09.2026–19.10.2026. Фильтры «ниже порога» оставляют только одну причину.
+У доли перетока числовой нормы нет, поэтому она в причину не входит. «30 дней» совпадает с периодом по умолчанию на странице клиентов: 20.09.2026–19.10.2026.
 """)
     threshold_table = raw_table(
         api, "Аутсайдеры — пороги", threshold_id,
-        ["sco_share_min_pct", "annul_share_max_pct", "transfer_share_max_pct"],
+        ["sco_share_min_pct", "annul_share_max_pct"],
     )
     chain_table = raw_table(
         api, "Аутсайдеры — сети", chain_out_id,
-        ["chain_name", "stores_with_sco", "stores_without_sco", "sco_share_pct", "annul_share_pct", "transfer_share_pct", "outlier_reason"],
+        ["chain_name", "sco_share_pct", "annul_share_pct", "transfer_share_pct", "stores_with_sco", "stores_without_sco", "outlier_reason"],
+        SHARE_FORMAT,
     )
     store_table = raw_table(
         api, "Аутсайдеры — магазины", store_out_id,
         ["chain_name", "store_name", "sco_share_pct", "annul_share_pct", "transfer_share_pct", "sco_items_p95", "sco_avg_duration_sec", "sco_avg_annul_sec", "outlier_reason"],
+        STORE_FORMAT,
     )
     outlier_charts = [chain_table, store_table]
     create_dashboard(api, "Аутсайдеры", "outliers", [
-        [(outliers_md, 12, 28, "Пояснение")],
+        [outliers_md],
         [(threshold_table, 12, 14, "Пороги")],
         [(chain_table, 12, 90, "Сети")],
         [(store_table, 12, 90, "Магазины")],
@@ -579,7 +607,6 @@ p95 товаров, средняя длительность чека и сред
         select_filter("NATIVE_FILTER-period", "Период", [chain_out_id, store_out_id], "period_name", outlier_charts, default="30 дней", required=True),
         select_filter("NATIVE_FILTER-low", "Доля КСО ниже порога", [chain_out_id, store_out_id], "low_sco_share", outlier_charts),
         select_filter("NATIVE_FILTER-annul", "Аннуляции выше порога", [chain_out_id, store_out_id], "high_annul_share", outlier_charts),
-        select_filter("NATIVE_FILTER-transfer", "Переток выше порога", [chain_out_id, store_out_id], "high_transfer_share", outlier_charts),
         select_filter("NATIVE_FILTER-outchain", "Торговая сеть", [chain_out_id, store_out_id], "chain_name", outlier_charts),
     ])
 

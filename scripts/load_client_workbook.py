@@ -12,6 +12,7 @@ import random
 import re
 import sys
 import zipfile
+import zlib
 from collections import defaultdict
 from datetime import date, timedelta
 from pathlib import Path
@@ -34,6 +35,82 @@ def norm(value):
 
 def clamp(value, low, high):
     return max(low, min(high, value))
+
+
+# Сети, где на магазин с КСО приходится в среднем 7 касс. Остальные — 3, 4 или 5.
+DENSE_TOKENS = ("гиперглобус", "лента", "реми", "невада")
+
+
+def name_tokens(name):
+    folded = name.casefold().replace("ё", "е")
+    return [part for part in re.split(r"[^a-zа-я0-9]+", folded) if part]
+
+
+def sco_density(name, chain_id):
+    tokens = set(name_tokens(name))
+    if tokens.intersection(DENSE_TOKENS):
+        return 7
+    return 3 + (zlib.crc32(chain_id.encode()) % 3)
+
+
+# Первые магазины сети специально разные, чтобы в таблице были и норма, и отклонения.
+SHOWCASE = {
+    2: ("low", "strong"),
+    3: ("low", "annul", "healthy"),
+    4: ("low", "annul", "slow", "healthy"),
+    5: ("low", "annul", "slow", "long_annul", "strong"),
+}
+FULL_SHOWCASE = ("low", "annul", "slow", "long_annul", "strong", "healthy")
+
+
+def profile_kind(rng, client, store_index, sco_count):
+    if sco_count >= 6 and store_index <= len(FULL_SHOWCASE):
+        return FULL_SHOWCASE[store_index - 1]
+    if store_index <= sco_count and sco_count in SHOWCASE:
+        return SHOWCASE[sco_count][store_index - 1]
+    roll = rng.random()
+    low_until = 0.28 if client["low_share"] else 0.16
+    annul_until = low_until + (0.26 if client["high_annul"] else 0.14)
+    slow_until = annul_until + 0.12
+    long_annul_until = slow_until + 0.10
+    strong_until = long_annul_until + 0.14
+    if roll < low_until:
+        return "low"
+    if roll < annul_until:
+        return "annul"
+    if roll < slow_until:
+        return "slow"
+    if roll < long_annul_until:
+        return "long_annul"
+    if roll < strong_until:
+        return "strong"
+    return "healthy"
+
+
+def store_rates(rng, client, store_index, sco_count):
+    """Профиль магазина внутри сети. Сеть задаёт склонность, магазины расходятся."""
+    kind = profile_kind(rng, client, store_index, sco_count)
+    if kind == "low":
+        share, annul, transfer = rng.uniform(0.06, 0.24), rng.uniform(0.005, 0.018), rng.uniform(0.38, 0.82)
+        p95, duration, annul_sec = rng.uniform(2.5, 8), rng.uniform(40, 80), rng.uniform(15, 70)
+    elif kind == "annul":
+        share, annul, transfer = rng.uniform(0.34, 0.62), rng.uniform(0.045, 0.14), rng.uniform(0.1, 0.55)
+        p95, duration, annul_sec = rng.uniform(5, 14), rng.uniform(40, 80), rng.uniform(40, 100)
+    elif kind == "slow":
+        share, annul, transfer = rng.uniform(0.34, 0.66), rng.uniform(0.004, 0.016), rng.uniform(0.1, 0.5)
+        p95, duration, annul_sec = rng.uniform(10, 28), rng.uniform(110, 210), rng.uniform(20, 80)
+    elif kind == "long_annul":
+        share, annul, transfer = rng.uniform(0.34, 0.64), rng.uniform(0.006, 0.018), rng.uniform(0.1, 0.5)
+        p95, duration, annul_sec = rng.uniform(4, 14), rng.uniform(40, 80), rng.uniform(140, 230)
+    elif kind == "strong":
+        share, annul, transfer = rng.uniform(0.64, 0.88), rng.uniform(0.003, 0.012), rng.uniform(0.05, 0.25)
+        p95, duration, annul_sec = rng.uniform(2.5, 7), rng.uniform(25, 55), rng.uniform(8, 35)
+    else:
+        share, annul, transfer = rng.uniform(0.36, 0.62), rng.uniform(0.004, 0.014), rng.uniform(0.08, 0.46)
+        p95, duration, annul_sec = rng.uniform(4, 14), rng.uniform(38, 75), rng.uniform(12, 70)
+    if client["high_transfer"]:
+        transfer = clamp(transfer + 0.15, 0.05, 0.92)
+    return share, annul, transfer, p95, duration, annul_sec, rng.uniform(0.35, 2.6)
 
 
 def spread(total, count):
@@ -175,12 +252,19 @@ def build(path):
         info = match_directory(name, directory)
         sco_registers = item["sco_registers"]
         stores_total = info["stores"] if info and info["stores"] else None
-        if stores_total:
-            with_sco = min(stores_total, sco_registers)
-            without_sco = stores_total - with_sco
+        density = sco_density(name, code)
+        if sco_registers <= 0:
+            with_sco = 0
+            without_sco = stores_total or 0
         else:
-            with_sco = max(1, min(sco_registers, round(sco_registers / 6) or 1))
-            without_sco = 0
+            # Столько магазинов нужно, чтобы на магазин с КСО пришлось density касс.
+            with_sco = min(sco_registers, max(1, int(round(sco_registers / density))))
+            if stores_total and stores_total > with_sco:
+                without_sco = stores_total - with_sco
+            else:
+                # В книге магазины без КСО не выделены. Если справочник не больше
+                # числа магазинов с КСО, добавляем около одного такого магазина на пять.
+                without_sco = max(1, int(round(with_sco * 0.2)))
         if info and info["all_registers"] and info["all_registers"] > sco_registers:
             pos_registers = info["all_registers"] - sco_registers
             pos_source = "кассы из листа Клиенты SR10 х SCO минус КСО"
@@ -220,15 +304,6 @@ def write_tables(clients):
         })
         sco_spread = spread(client["sco_registers"], client["with_sco"])
         pos_spread = spread(client["pos_registers"], client["with_sco"] + client["without_sco"])
-        if client["low_share"]:
-            sco_p = rng.uniform(0.14, 0.26)
-        else:
-            sco_p = rng.uniform(0.36, 0.58)
-        annul_p = rng.uniform(0.045, 0.08) if client["high_annul"] else rng.uniform(0.008, 0.022)
-        transfer_p = rng.uniform(0.48, 0.68) if client["high_transfer"] else rng.uniform(0.15, 0.34)
-        p95 = rng.uniform(6, 14)
-        duration = rng.uniform(50, 100)
-        annul_sec = rng.uniform(20, 60)
         total_stores = client["with_sco"] + client["without_sco"]
         for store_index in range(1, total_stores + 1):
             has_sco = store_index <= client["with_sco"]
@@ -249,14 +324,18 @@ def write_tables(clients):
             })
             if not has_sco:
                 continue
+            share_p, annul_p, transfer_p, p95, duration, annul_sec, busy = store_rates(
+                rng, client, store_index, client["with_sco"]
+            )
             for offset in range(DAYS):
                 day = START + timedelta(days=offset)
-                volume = sco_registers * rng.randint(45, 110) + pos_registers * rng.randint(40, 100)
+                volume = (sco_registers * rng.randint(40, 120) + pos_registers * rng.randint(30, 110)) * busy
                 if day.weekday() >= 5:
-                    volume = int(volume * 1.3)
-                share = clamp(sco_p + rng.uniform(-0.015, 0.015), 0.05, 0.85)
+                    volume *= 1.3
+                volume = max(2, int(volume))
+                share = clamp(share_p + rng.uniform(-0.02, 0.02), 0.04, 0.9)
                 annul_rate = clamp(annul_p + rng.uniform(-0.004, 0.004), 0.001, 0.2)
-                transfer_rate = clamp(transfer_p + rng.uniform(-0.02, 0.02), 0.05, 0.9)
+                transfer_rate = clamp(transfer_p + rng.uniform(-0.03, 0.03), 0.04, 0.92)
                 sco_receipts = max(1, int(round(volume * share)))
                 pos_receipts = max(1, int(round(volume * (1 - share))))
                 metrics.append({
@@ -266,9 +345,9 @@ def write_tables(clients):
                     "pos_receipts": pos_receipts,
                     "sco_annulled": min(sco_receipts, int(round(sco_receipts * annul_rate))),
                     "pos_potential": min(pos_receipts, int(round(pos_receipts * transfer_rate))),
-                    "sco_items_p95": round(clamp(p95 + rng.uniform(-1, 1), 1, 40), 2),
+                    "sco_items_p95": round(clamp(p95 + rng.uniform(-1.2, 1.2), 1, 40), 2),
                     "sco_avg_duration_sec": round(clamp(duration + rng.uniform(-8, 8), 15, 300), 1),
-                    "sco_avg_annul_sec": round(clamp(annul_sec + rng.uniform(-5, 5), 5, 180), 1),
+                    "sco_avg_annul_sec": round(clamp(annul_sec + rng.uniform(-8, 8), 5, 240), 1),
                 })
     write_csv(OUT / "chain.csv", ["id", "name", "country", "region", "store_format"], chains)
     write_csv(OUT / "store.csv", ["id", "chain_id", "name", "has_sco", "sco_registers", "pos_registers"], stores)

@@ -34,8 +34,8 @@ CREATE TABLE daily_store_metric (
 
 CREATE INDEX daily_store_metric_date_idx ON daily_store_metric (report_date);
 
--- 30% — норматив доли чеков КСО из требований продукта.
--- 3% и 40% — стартовые значения примера для аннуляций и перетока, не норматив.
+-- 30% и 2% — нормы доли чеков КСО и доли аннуляций со страницы мониторинга.
+-- У доли перетока числовой нормы нет, столбец порога в отбор аутсайдеров не входит.
 CREATE TABLE report_threshold (
   id integer PRIMARY KEY CHECK (id = 1),
   sco_share_min_pct numeric NOT NULL,
@@ -44,7 +44,7 @@ CREATE TABLE report_threshold (
 );
 
 INSERT INTO report_threshold (id, sco_share_min_pct, annul_share_max_pct, transfer_share_max_pct)
-VALUES (1, 30, 3, 40);
+VALUES (1, 30, 2, 40);
 
 CREATE VIEW v_daily_fact AS
 SELECT
@@ -63,7 +63,10 @@ SELECT
   m.pos_potential,
   m.sco_items_p95,
   m.sco_avg_duration_sec,
-  m.sco_avg_annul_sec
+  m.sco_avg_annul_sec,
+  cc.stores_with_pos,
+  cc.sco_registers_total,
+  cc.pos_registers_total
 FROM daily_store_metric m
 JOIN store s ON s.id = m.store_id AND s.has_sco
 JOIN chain c ON c.id = s.chain_id
@@ -71,7 +74,10 @@ JOIN (
   SELECT
     chain_id,
     COUNT(*) FILTER (WHERE has_sco) AS stores_with_sco,
-    COUNT(*) FILTER (WHERE NOT has_sco) AS stores_without_sco
+    COUNT(*) FILTER (WHERE NOT has_sco) AS stores_without_sco,
+    COUNT(*) FILTER (WHERE pos_registers > 0) AS stores_with_pos,
+    COALESCE(SUM(sco_registers), 0) AS sco_registers_total,
+    COALESCE(SUM(pos_registers), 0) AS pos_registers_total
   FROM store
   GROUP BY chain_id
 ) cc ON cc.chain_id = c.id;
@@ -139,15 +145,12 @@ SELECT
     CASE WHEN a.sco_share_pct < t.sco_share_min_pct
       THEN 'доля чеков КСО ниже ' || trim(to_char(t.sco_share_min_pct, 'FM990.0')) || '%' END,
     CASE WHEN a.annul_share_pct > t.annul_share_max_pct
-      THEN 'доля аннуляций выше ' || trim(to_char(t.annul_share_max_pct, 'FM990.0')) || '%' END,
-    CASE WHEN a.transfer_share_pct > t.transfer_share_max_pct
-      THEN 'доля перетока выше ' || trim(to_char(t.transfer_share_max_pct, 'FM990.0')) || '%' END
+      THEN 'доля аннуляций выше ' || trim(to_char(t.annul_share_max_pct, 'FM990.0')) || '%' END
   ) AS outlier_reason
 FROM agg a
 CROSS JOIN report_threshold t
 WHERE a.sco_share_pct < t.sco_share_min_pct
-   OR a.annul_share_pct > t.annul_share_max_pct
-   OR a.transfer_share_pct > t.transfer_share_max_pct;
+   OR a.annul_share_pct > t.annul_share_max_pct;
 
 CREATE VIEW v_store_outlier AS
 WITH anchor AS (
@@ -206,15 +209,12 @@ SELECT
     CASE WHEN a.sco_share_pct < t.sco_share_min_pct
       THEN 'доля чеков КСО ниже ' || trim(to_char(t.sco_share_min_pct, 'FM990.0')) || '%' END,
     CASE WHEN a.annul_share_pct > t.annul_share_max_pct
-      THEN 'доля аннуляций выше ' || trim(to_char(t.annul_share_max_pct, 'FM990.0')) || '%' END,
-    CASE WHEN a.transfer_share_pct > t.transfer_share_max_pct
-      THEN 'доля перетока выше ' || trim(to_char(t.transfer_share_max_pct, 'FM990.0')) || '%' END
+      THEN 'доля аннуляций выше ' || trim(to_char(t.annul_share_max_pct, 'FM990.0')) || '%' END
   ) AS outlier_reason
 FROM agg a
 CROSS JOIN report_threshold t
 WHERE a.sco_share_pct < t.sco_share_min_pct
-   OR a.annul_share_pct > t.annul_share_max_pct
-   OR a.transfer_share_pct > t.transfer_share_max_pct;
+   OR a.annul_share_pct > t.annul_share_max_pct;
 
 CREATE VIEW v_threshold AS
 SELECT
